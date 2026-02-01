@@ -28,6 +28,7 @@ exports.handler = async (event) => {
   // Germany 40 CFD på Saxo
   const symbolMap = {
     'GER40': 3302,
+    'GER40.I': 3302,
     'DAX': 3302,
   };
 
@@ -40,46 +41,57 @@ exports.handler = async (event) => {
     let result;
     
     if (action.toLowerCase() === 'close') {
-      // Luk alle positioner på dette instrument
       result = await closePosition(uic, ACCESS_TOKEN, ACCOUNT_KEY);
     } else {
-      // Åbn ny position med SL og TP
+      // Hovedordre uden SL/TP først
       const order = {
         AccountKey: ACCOUNT_KEY,
-        Amount: qty || 1,
+        Amount: Math.max(1, Math.round(qty || 1)),
         AssetType: 'CfdOnIndex',
         BuySell: action.toLowerCase() === 'buy' ? 'Buy' : 'Sell',
         OrderType: 'Market',
         Uic: uic,
-        ManualOrder: false,
-        Orders: []
+        ManualOrder: false
       };
 
-      // Tilføj Stop Loss hvis angivet
-      if (sl) {
-        order.Orders.push({
-          OrderType: 'StopIfTraded',
-          OrderPrice: parseFloat(sl),
-          BuySell: action.toLowerCase() === 'buy' ? 'Sell' : 'Buy',
-          Amount: qty || 1,
-          AssetType: 'CfdOnIndex',
-          Uic: uic
-        });
-      }
-
-      // Tilføj Take Profit hvis angivet
-      if (tp) {
-        order.Orders.push({
-          OrderType: 'LimitIfTraded',
-          OrderPrice: parseFloat(tp),
-          BuySell: action.toLowerCase() === 'buy' ? 'Sell' : 'Buy',
-          Amount: qty || 1,
-          AssetType: 'CfdOnIndex',
-          Uic: uic
-        });
-      }
-
       result = await placeOrder(order, ACCESS_TOKEN);
+      
+      // Hvis SL eller TP er angivet, placer related orders bagefter
+      if (sl || tp) {
+        const positionId = result.PositionId;
+        const oppositeSide = action.toLowerCase() === 'buy' ? 'Sell' : 'Buy';
+        const amount = Math.max(1, Math.round(qty || 1));
+        
+        if (sl) {
+          const slOrder = {
+            AccountKey: ACCOUNT_KEY,
+            Amount: amount,
+            AssetType: 'CfdOnIndex',
+            BuySell: oppositeSide,
+            OrderType: 'Stop',
+            OrderPrice: parseFloat(sl),
+            Uic: uic,
+            ManualOrder: false,
+            RelatedOpenOrders: [{ PositionId: positionId }]
+          };
+          await placeOrder(slOrder, ACCESS_TOKEN);
+        }
+        
+        if (tp) {
+          const tpOrder = {
+            AccountKey: ACCOUNT_KEY,
+            Amount: amount,
+            AssetType: 'CfdOnIndex',
+            BuySell: oppositeSide,
+            OrderType: 'Limit',
+            OrderPrice: parseFloat(tp),
+            Uic: uic,
+            ManualOrder: false,
+            RelatedOpenOrders: [{ PositionId: positionId }]
+          };
+          await placeOrder(tpOrder, ACCESS_TOKEN);
+        }
+      }
     }
     
     console.log('Result:', result);
@@ -132,7 +144,6 @@ function placeOrder(order, token) {
 
 function closePosition(uic, token, accountKey) {
   return new Promise((resolve, reject) => {
-    // Først hent åbne positioner
     const options = {
       hostname: 'gateway.saxobank.com',
       port: 443,
@@ -152,17 +163,14 @@ function closePosition(uic, token, accountKey) {
           const pos = positions.Data?.find(p => p.PositionBase?.Uic === uic);
           
           if (pos) {
-            // Luk positionen
             const closeOrder = {
               AccountKey: accountKey,
-              PositionId: pos.PositionId,
-              Orders: [{
-                OrderType: 'Market',
-                Uic: uic,
-                AssetType: 'CfdOnIndex',
-                Amount: pos.PositionBase.Amount,
-                BuySell: pos.PositionBase.Amount > 0 ? 'Sell' : 'Buy'
-              }]
+              Amount: Math.abs(pos.PositionBase.Amount),
+              AssetType: 'CfdOnIndex',
+              BuySell: pos.PositionBase.Amount > 0 ? 'Sell' : 'Buy',
+              OrderType: 'Market',
+              Uic: uic,
+              ManualOrder: false
             };
             resolve(await placeOrder(closeOrder, token));
           } else {
