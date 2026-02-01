@@ -86,16 +86,57 @@ exports.handler = async (event) => {
 async function getFreshToken() {
   const CLIENT_ID = process.env.SAXO_CLIENT_ID;
   const CLIENT_SECRET = process.env.SAXO_CLIENT_SECRET;
-  const REFRESH_TOKEN = process.env.SAXO_REFRESH_TOKEN;
   
-  if (!CLIENT_ID || !CLIENT_SECRET || !REFRESH_TOKEN) {
-    throw new Error('Missing refresh token credentials');
+  if (!CLIENT_ID || !CLIENT_SECRET) {
+    throw new Error('Missing client credentials');
+  }
+  
+  // Hent refresh token fra Blob storage eller environment
+  let currentRefreshToken = await getStoredRefreshToken();
+  if (!currentRefreshToken) {
+    currentRefreshToken = process.env.SAXO_REFRESH_TOKEN;
+  }
+  
+  if (!currentRefreshToken) {
+    throw new Error('No refresh token available');
   }
   
   console.log('Refreshing token...');
-  const tokenData = await refreshToken(CLIENT_ID, CLIENT_SECRET, REFRESH_TOKEN);
+  const tokenData = await refreshToken(CLIENT_ID, CLIENT_SECRET, currentRefreshToken);
   console.log('Token refreshed, expires in:', tokenData.expires_in, 'seconds');
+  
+  // Gem det nye refresh token til næste gang
+  if (tokenData.refresh_token) {
+    await storeRefreshToken(tokenData.refresh_token);
+    console.log('New refresh token stored');
+  }
+  
   return tokenData.access_token;
+}
+
+async function getStoredRefreshToken() {
+  try {
+    const { getStore } = await import('@netlify/blobs');
+    const store = getStore('saxo-tokens');
+    const token = await store.get('refresh_token');
+    if (token) {
+      console.log('Using stored refresh token');
+      return token;
+    }
+  } catch (e) {
+    console.log('Could not read from blob storage:', e.message);
+  }
+  return null;
+}
+
+async function storeRefreshToken(token) {
+  try {
+    const { getStore } = await import('@netlify/blobs');
+    const store = getStore('saxo-tokens');
+    await store.set('refresh_token', token);
+  } catch (e) {
+    console.log('Could not write to blob storage:', e.message);
+  }
 }
 
 function refreshToken(clientId, clientSecret, refreshToken) {
