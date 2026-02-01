@@ -1,4 +1,7 @@
 export async function handler(event) {
+  console.log("Webhook triggered");
+  console.log("HTTP method:", event.httpMethod);
+
   if (event.httpMethod !== "POST") {
     return { statusCode: 200, body: "Webhook alive" };
   }
@@ -15,6 +18,8 @@ export async function handler(event) {
     ManualOrder: true
   };
 
+  console.log("Order payload:", JSON.stringify(order));
+
   const res = await fetch(
     "https://gateway.saxobank.com/openapi/trade/v2/orders",
     {
@@ -28,6 +33,9 @@ export async function handler(event) {
   );
 
   const text = await res.text();
+
+  console.log("Saxo HTTP status:", res.status);
+  console.log("Saxo response body:", text);
 
   return {
     statusCode: res.status,
