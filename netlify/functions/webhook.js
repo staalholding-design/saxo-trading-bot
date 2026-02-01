@@ -18,7 +18,6 @@ exports.handler = async (event) => {
     return { statusCode: 400, body: JSON.stringify({ error: 'Invalid JSON', raw: event.body }) };
   }
 
-  // Hent gyldigt token (refresher automatisk hvis udløbet)
   let ACCESS_TOKEN;
   try {
     ACCESS_TOKEN = await getValidToken();
@@ -54,7 +53,10 @@ exports.handler = async (event) => {
     let result;
     
     if (action.toLowerCase() === 'close') {
-      result = await closePosition(uic, ACCESS_TOKEN, ACCOUNT_KEY);
+      // Luk positioner OG slet ventende ordrer
+      const closeResult = await closePosition(uic, ACCESS_TOKEN, ACCOUNT_KEY);
+      const cancelResult = await cancelOrders(uic, ACCESS_TOKEN, ACCOUNT_KEY);
+      result = { positions: closeResult, orders: cancelResult };
     } else {
       const order = {
         AccountKey: ACCOUNT_KEY,
@@ -123,7 +125,6 @@ exports.handler = async (event) => {
   } catch (error) {
     console.error('Main error:', error.message);
     
-    // Hvis 401, prøv at refreshe token og forsøg igen
     if (error.message.includes('401')) {
       console.log('Got 401, forcing token refresh...');
       cachedToken = null;
@@ -140,22 +141,19 @@ exports.handler = async (event) => {
 async function getValidToken() {
   const now = Date.now();
   
-  // Brug cached token hvis det stadig er gyldigt (med 60 sekunders buffer)
   if (cachedToken && tokenExpiry > now + 60000) {
     console.log('Using cached token');
     return cachedToken;
   }
   
-  // Prøv at bruge environment token først
   const envToken = process.env.SAXO_ACCESS_TOKEN;
   if (envToken && !cachedToken) {
     console.log('Using environment token');
     cachedToken = envToken;
-    tokenExpiry = now + 1200000; // Antag 20 min
+    tokenExpiry = now + 1200000;
     return cachedToken;
   }
   
-  // Refresh token
   console.log('Refreshing token...');
   const CLIENT_ID = process.env.SAXO_CLIENT_ID;
   const CLIENT_SECRET = process.env.SAXO_CLIENT_SECRET;
@@ -283,6 +281,82 @@ function closePosition(uic, token, accountKey) {
           }
         } else {
           reject(new Error(`Saxo ${res.statusCode}: ${data}`));
+        }
+      });
+    });
+
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+function cancelOrders(uic, token, accountKey) {
+  return new Promise((resolve, reject) => {
+    const options = {
+      hostname: 'gateway.saxobank.com',
+      port: 443,
+      path: `/openapi/port/v1/orders/me`,
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${token}`
+      }
+    };
+
+    const req = https.request(options, (res) => {
+      let data = '';
+      res.on('data', (chunk) => data += chunk);
+      res.on('end', async () => {
+        console.log('Orders response:', res.statusCode, data);
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          const orders = JSON.parse(data || '{}');
+          const matchingOrders = orders.Data?.filter(o => o.Uic === uic) || [];
+          
+          if (matchingOrders.length > 0) {
+            const deleteResults = [];
+            for (const order of matchingOrders) {
+              try {
+                const result = await deleteOrder(order.OrderId, accountKey, token);
+                deleteResults.push({ orderId: order.OrderId, result });
+              } catch (err) {
+                deleteResults.push({ orderId: order.OrderId, error: err.message });
+              }
+            }
+            resolve({ deleted: deleteResults });
+          } else {
+            resolve({ message: 'No orders to cancel' });
+          }
+        } else {
+          reject(new Error(`Saxo ${res.statusCode}: ${data}`));
+        }
+      });
+    });
+
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+function deleteOrder(orderId, accountKey, token) {
+  return new Promise((resolve, reject) => {
+    const options = {
+      hostname: 'gateway.saxobank.com',
+      port: 443,
+      path: `/openapi/trade/v2/orders/${orderId}?AccountKey=${encodeURIComponent(accountKey)}`,
+      method: 'DELETE',
+      headers: {
+        'Authorization': `Bearer ${token}`
+      }
+    };
+
+    const req = https.request(options, (res) => {
+      let data = '';
+      res.on('data', (chunk) => data += chunk);
+      res.on('end', () => {
+        console.log('Delete order response:', res.statusCode, data);
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          resolve({ success: true });
+        } else {
+          reject(new Error(`Delete failed: ${res.statusCode} - ${data}`));
         }
       });
     });
