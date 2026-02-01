@@ -1,7 +1,5 @@
 // netlify/functions/webhook.js
 
-import fetch from "node-fetch";
-
 async function getAccessToken() {
   const params = new URLSearchParams({
     grant_type: "refresh_token",
@@ -35,7 +33,6 @@ async function getAccessToken() {
 
 export async function handler(event) {
 
-  // Kun POST
   if (event.httpMethod !== "POST") {
     return {
       statusCode: 200,
@@ -46,7 +43,7 @@ export async function handler(event) {
   try {
     const accessToken = await getAccessToken();
 
-    // 🔥 HARD-CODET TESTORDRE (IDENTISK MED SIM)
+    // 🔥 HARD-CODET LIVE TEST (IDENTISK MED SIM)
     const order = {
       AccountKey: "MVe2xwDyYIP-2dzfoD|F7Q==",
       AssetType: "CfdOnIndex",
@@ -57,7 +54,7 @@ export async function handler(event) {
       ManualOrder: true
     };
 
-    console.log("Sending HARD-CODED order to Saxo:", order);
+    console.log("Sending order to Saxo LIVE:", order);
 
     const res = await fetch(
       "https://gateway.saxobank.com/openapi/trade/v2/orders",
