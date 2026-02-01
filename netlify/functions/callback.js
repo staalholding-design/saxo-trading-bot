@@ -11,29 +11,39 @@ export async function handler(event) {
   const params = new URLSearchParams({
     grant_type: "authorization_code",
     code,
-    redirect_uri: "https://precious-medovik-232c3d.netlify.app/callback"
+    redirect_uri: "https://precious-medovik-232c3d.netlify.app/.netlify/functions/callback"
   });
 
-  const auth = Buffer.from(
-    process.env.SAXO_CLIENT_ID + ":" + process.env.SAXO_CLIENT_SECRET
-  ).toString("base64");
+  const clientId = process.env.SAXO_CLIENT_ID;
+  const clientSecret = process.env.SAXO_CLIENT_SECRET;
 
-  const response = await fetch(
-    "https://live.logonvalidation.net/token",
-    {
-      method: "POST",
-      headers: {
-        "Authorization": `Basic ${auth}`,
-        "Content-Type": "application/x-www-form-urlencoded"
-      },
-      body: params.toString()
-    }
-  );
+  if (!clientId || !clientSecret) {
+    return {
+      statusCode: 500,
+      body: JSON.stringify({
+        error: "Missing env vars",
+        clientIdPresent: !!clientId,
+        clientSecretPresent: !!clientSecret
+      })
+    };
+  }
 
-  const data = await response.json();
+  const auth = Buffer.from(`${clientId}:${clientSecret}`).toString("base64");
+
+  const response = await fetch("https://live.logonvalidation.net/token", {
+    method: "POST",
+    headers: {
+      "Authorization": `Basic ${auth}`,
+      "Content-Type": "application/x-www-form-urlencoded"
+    },
+    body: params.toString()
+  });
+
+  const text = await response.text();
 
   return {
-    statusCode: 200,
-    body: JSON.stringify(data, null, 2)
+    statusCode: response.status,
+    headers: { "Content-Type": "text/plain" },
+    body: text
   };
 }
