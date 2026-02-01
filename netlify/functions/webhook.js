@@ -29,13 +29,13 @@ async function getAccessToken() {
   }
 
   const data = JSON.parse(text);
-  console.log("New access token received");
+  console.log("Access token OK");
   return data.access_token;
 }
 
 export async function handler(event) {
 
-  // Browser test
+  // Kun POST
   if (event.httpMethod !== "POST") {
     return {
       statusCode: 200,
@@ -44,27 +44,21 @@ export async function handler(event) {
   }
 
   try {
-    // 1️⃣ Parse TradingView payload
-    const payload = JSON.parse(event.body || "{}");
-    console.log("Incoming TradingView payload:", payload);
-
-    // 2️⃣ Get access token
     const accessToken = await getAccessToken();
 
-    // 3️⃣ Build MARKET order (SIKKER TEST)
+    // 🔥 HARD-CODET TESTORDRE (IDENTISK MED SIM)
     const order = {
-      AccountKey: process.env.SAXO_ACCOUNT_KEY,
+      AccountKey: "MVe2xwDyYIP-2dzfoD|F7Q==",
       AssetType: "CfdOnIndex",
-      Uic: 4910,                 // GER40
-      BuySell: payload.action === "sell" ? "Sell" : "Buy",
+      Uic: 4910,
+      BuySell: "Buy",
       OrderType: "Market",
-      Amount: Number(payload.qty || 0.1),
+      Amount: 0.1,
       ManualOrder: true
     };
 
-    console.log("Order sent to Saxo:", order);
+    console.log("Sending HARD-CODED order to Saxo:", order);
 
-    // 4️⃣ Send order
     const res = await fetch(
       "https://gateway.saxobank.com/openapi/trade/v2/orders",
       {
@@ -78,16 +72,21 @@ export async function handler(event) {
     );
 
     const responseText = await res.text();
-    console.log("Saxo response status:", res.status);
-    console.log("Saxo response body:", responseText);
+
+    console.log("Saxo status:", res.status);
+    console.log("Saxo body:", responseText);
+
+    if (!res.ok) {
+      throw new Error(`Saxo error ${res.status}: ${responseText}`);
+    }
 
     return {
-      statusCode: res.status,
+      statusCode: 200,
       body: responseText
     };
 
   } catch (err) {
-    console.error("Webhook error:", err);
+    console.error("Webhook FAILED:", err);
     return {
       statusCode: 500,
       body: err.toString()
