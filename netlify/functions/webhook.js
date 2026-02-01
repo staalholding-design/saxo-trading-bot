@@ -1,8 +1,5 @@
 const https = require('https');
 
-let cachedToken = null;
-let tokenExpiry = 0;
-
 exports.handler = async (event) => {
   console.log('Incoming request:', event.httpMethod, event.body);
   
@@ -18,9 +15,10 @@ exports.handler = async (event) => {
     return { statusCode: 400, body: JSON.stringify({ error: 'Invalid JSON', raw: event.body }) };
   }
 
+  // Hent ALTID nyt token via refresh
   let ACCESS_TOKEN;
   try {
-    ACCESS_TOKEN = await getValidToken();
+    ACCESS_TOKEN = await getFreshToken();
   } catch (tokenError) {
     console.error('Token error:', tokenError.message);
     return { statusCode: 500, body: JSON.stringify({ error: 'Token refresh failed', details: tokenError.message }) };
@@ -53,7 +51,6 @@ exports.handler = async (event) => {
     let result;
     
     if (action.toLowerCase() === 'close') {
-      // Luk positioner OG slet ventende ordrer
       const closeResult = await closePosition(uic, ACCESS_TOKEN, ACCOUNT_KEY);
       const cancelResult = await cancelOrders(uic, ACCESS_TOKEN, ACCOUNT_KEY);
       result = { positions: closeResult, orders: cancelResult };
@@ -71,51 +68,6 @@ exports.handler = async (event) => {
       console.log('Placing order:', order);
       result = await placeOrder(order, ACCESS_TOKEN);
       console.log('Order result:', result);
-      
-      if (result.OrderId && (sl || tp)) {
-        const oppositeSide = action.toLowerCase() === 'buy' ? 'Sell' : 'Buy';
-        const amount = Math.max(0.1, parseFloat(qty) || 0.1);
-        
-        await new Promise(resolve => setTimeout(resolve, 500));
-        
-        if (sl) {
-          try {
-            const slOrder = {
-              AccountKey: ACCOUNT_KEY,
-              Amount: amount,
-              AssetType: 'CfdOnIndex',
-              BuySell: oppositeSide,
-              OrderType: 'Stop',
-              OrderPrice: parseFloat(sl),
-              Uic: uic,
-              ManualOrder: true
-            };
-            console.log('Placing SL:', slOrder);
-            await placeOrder(slOrder, ACCESS_TOKEN);
-          } catch (slError) {
-            console.log('SL error (continuing):', slError.message);
-          }
-        }
-        
-        if (tp) {
-          try {
-            const tpOrder = {
-              AccountKey: ACCOUNT_KEY,
-              Amount: amount,
-              AssetType: 'CfdOnIndex',
-              BuySell: oppositeSide,
-              OrderType: 'Limit',
-              OrderPrice: parseFloat(tp),
-              Uic: uic,
-              ManualOrder: true
-            };
-            console.log('Placing TP:', tpOrder);
-            await placeOrder(tpOrder, ACCESS_TOKEN);
-          } catch (tpError) {
-            console.log('TP error (continuing):', tpError.message);
-          }
-        }
-      }
     }
     
     return {
@@ -124,13 +76,6 @@ exports.handler = async (event) => {
     };
   } catch (error) {
     console.error('Main error:', error.message);
-    
-    if (error.message.includes('401')) {
-      console.log('Got 401, forcing token refresh...');
-      cachedToken = null;
-      tokenExpiry = 0;
-    }
-    
     return {
       statusCode: 500,
       body: JSON.stringify({ success: false, error: error.message })
@@ -138,23 +83,7 @@ exports.handler = async (event) => {
   }
 };
 
-async function getValidToken() {
-  const now = Date.now();
-  
-  if (cachedToken && tokenExpiry > now + 60000) {
-    console.log('Using cached token');
-    return cachedToken;
-  }
-  
-  const envToken = process.env.SAXO_ACCESS_TOKEN;
-  if (envToken && !cachedToken) {
-    console.log('Using environment token');
-    cachedToken = envToken;
-    tokenExpiry = now + 1200000;
-    return cachedToken;
-  }
-  
-  console.log('Refreshing token...');
+async function getFreshToken() {
   const CLIENT_ID = process.env.SAXO_CLIENT_ID;
   const CLIENT_SECRET = process.env.SAXO_CLIENT_SECRET;
   const REFRESH_TOKEN = process.env.SAXO_REFRESH_TOKEN;
@@ -163,12 +92,10 @@ async function getValidToken() {
     throw new Error('Missing refresh token credentials');
   }
   
+  console.log('Refreshing token...');
   const tokenData = await refreshToken(CLIENT_ID, CLIENT_SECRET, REFRESH_TOKEN);
-  cachedToken = tokenData.access_token;
-  tokenExpiry = now + (tokenData.expires_in * 1000);
-  
   console.log('Token refreshed, expires in:', tokenData.expires_in, 'seconds');
-  return cachedToken;
+  return tokenData.access_token;
 }
 
 function refreshToken(clientId, clientSecret, refreshToken) {
