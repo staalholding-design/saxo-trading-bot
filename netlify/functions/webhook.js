@@ -1,5 +1,7 @@
 // netlify/functions/webhook.js
 
+import fetch from "node-fetch";
+
 async function getAccessToken() {
   const params = new URLSearchParams({
     grant_type: "refresh_token",
@@ -19,18 +21,21 @@ async function getAccessToken() {
     body: params.toString()
   });
 
+  const text = await res.text();
+
   if (!res.ok) {
-    const text = await res.text();
-    throw new Error("Token refresh failed: " + text);
+    console.error("Token refresh failed:", text);
+    throw new Error(text);
   }
 
-  const data = await res.json();
+  const data = JSON.parse(text);
+  console.log("New access token received");
   return data.access_token;
 }
 
 export async function handler(event) {
 
-  // 👉 Gør det muligt at teste i browser
+  // Browser test
   if (event.httpMethod !== "POST") {
     return {
       statusCode: 200,
@@ -39,25 +44,27 @@ export async function handler(event) {
   }
 
   try {
-    // 1️⃣ Hent access token via refresh token
+    // 1️⃣ Parse TradingView payload
+    const payload = JSON.parse(event.body || "{}");
+    console.log("Incoming TradingView payload:", payload);
+
+    // 2️⃣ Get access token
     const accessToken = await getAccessToken();
 
-    // 2️⃣ LIVE TEST ORDER (MEGET SIKKER)
+    // 3️⃣ Build MARKET order (SIKKER TEST)
     const order = {
       AccountKey: process.env.SAXO_ACCOUNT_KEY,
-      Amount: 0.1,
       AssetType: "CfdOnIndex",
-      BuySell: "Buy",
-      OrderType: "Limit",
-      OrderPrice: 20000, // langt fra markedet → bliver IKKE eksekveret
-      OrderDuration: {
-        DurationType: "GoodTillCancel"
-      },
-      Uic: 4910, // GER40
+      Uic: 4910,                 // GER40
+      BuySell: payload.action === "sell" ? "Sell" : "Buy",
+      OrderType: "Market",
+      Amount: Number(payload.qty || 0.1),
       ManualOrder: true
     };
 
-    // 3️⃣ Send order til Saxo
+    console.log("Order sent to Saxo:", order);
+
+    // 4️⃣ Send order
     const res = await fetch(
       "https://gateway.saxobank.com/openapi/trade/v2/orders",
       {
@@ -70,14 +77,17 @@ export async function handler(event) {
       }
     );
 
-    const text = await res.text();
+    const responseText = await res.text();
+    console.log("Saxo response status:", res.status);
+    console.log("Saxo response body:", responseText);
 
     return {
       statusCode: res.status,
-      body: text
+      body: responseText
     };
 
   } catch (err) {
+    console.error("Webhook error:", err);
     return {
       statusCode: 500,
       body: err.toString()
