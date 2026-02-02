@@ -191,7 +191,7 @@ function updateNetlifyEnvVar(key, value) {
     const options = {
       hostname: 'api.netlify.com',
       port: 443,
-      path: `/api/v1/accounts/staalholding's team/env/${key}?site_id=${NETLIFY_SITE_ID}`,
+      path: `/api/v1/sites/${NETLIFY_SITE_ID}/env/${key}`,
       method: 'PATCH',
       headers: {
         'Authorization': `Bearer ${NETLIFY_API_TOKEN}`,
