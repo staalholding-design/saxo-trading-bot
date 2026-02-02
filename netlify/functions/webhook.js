@@ -96,13 +96,13 @@ exports.handler = async (event) => {
         });
       }
 
-      // Trailing Stop
+      // Trailing Stop - relativ til markedspris
       if (trailingStop && trailingStop.enabled) {
         relatedOrders.push({
           Amount: order.Amount,
           AssetType: 'CfdOnIndex',
           BuySell: order.BuySell === 'Buy' ? 'Sell' : 'Buy',
-          OrderType: 'TrailingStopIfTraded',
+          OrderType: 'TrailingStop',
           TrailingStopDistanceToMarket: parseFloat(trailingStop.trailPoints) || 25,
           TrailingStopStep: parseFloat(trailingStop.trailOffset) || 1,
           Uic: uic,
