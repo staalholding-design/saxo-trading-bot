@@ -1,9 +1,6 @@
 const https = require('https');
 
-let memoryToken = null;
-let memoryExpiry = 0;
-
-exports.handler = async (event, context) => {
+exports.handler = async (event) => {
   console.log('Incoming request:', event.httpMethod, event.body);
   
   if (event.httpMethod !== 'POST') {
@@ -20,7 +17,7 @@ exports.handler = async (event, context) => {
 
   let ACCESS_TOKEN;
   try {
-    ACCESS_TOKEN = await getValidToken(context);
+    ACCESS_TOKEN = await getValidToken();
   } catch (tokenError) {
     console.error('Token error:', tokenError.message);
     return { statusCode: 500, body: JSON.stringify({ error: 'Token error', details: tokenError.message }) };
@@ -78,12 +75,6 @@ exports.handler = async (event, context) => {
     };
   } catch (error) {
     console.error('Main error:', error.message);
-    
-    if (error.message.includes('401')) {
-      memoryToken = null;
-      memoryExpiry = 0;
-    }
-    
     return {
       statusCode: 500,
       body: JSON.stringify({ success: false, error: error.message })
@@ -91,62 +82,66 @@ exports.handler = async (event, context) => {
   }
 };
 
-async function getValidToken(context) {
-  const now = Date.now();
+async function getValidToken() {
+  const currentToken = process.env.SAXO_ACCESS_TOKEN;
+  const refreshToken = process.env.SAXO_REFRESH_TOKEN;
   
-  if (memoryToken && memoryExpiry > now) {
-    console.log('Using memory token');
-    return memoryToken;
+  // Prøv nuværende token først
+  const isValid = await testToken(currentToken);
+  if (isValid) {
+    console.log('Current token is valid');
+    return currentToken;
   }
   
-  if (context && context.blobs) {
-    try {
-      const store = context.blobs.getStore('saxo-tokens');
-      const storedData = await store.get('token-data', { type: 'json' });
-      
-      if (storedData && storedData.accessToken && storedData.expiry > now) {
-        console.log('Using stored token');
-        memoryToken = storedData.accessToken;
-        memoryExpiry = storedData.expiry;
-        return memoryToken;
-      }
-      
-      if (storedData && storedData.refreshToken) {
-        console.log('Refreshing token...');
-        const newTokens = await refreshTokenRequest(storedData.refreshToken);
-        
-        const newData = {
-          accessToken: newTokens.access_token,
-          refreshToken: newTokens.refresh_token,
-          expiry: now + (newTokens.expires_in * 1000) - 60000
-        };
-        
-        await store.setJSON('token-data', newData);
-        console.log('New tokens stored');
-        
-        memoryToken = newData.accessToken;
-        memoryExpiry = newData.expiry;
-        return memoryToken;
-      }
-    } catch (e) {
-      console.log('Blob error:', e.message);
-    }
-  }
+  // Token udløbet - refresh det
+  console.log('Token expired, refreshing...');
   
-  console.log('Using environment token');
-  return process.env.SAXO_ACCESS_TOKEN;
-}
-
-function refreshTokenRequest(refreshTokenValue) {
   const CLIENT_ID = process.env.SAXO_CLIENT_ID;
   const CLIENT_SECRET = process.env.SAXO_CLIENT_SECRET;
   
+  if (!CLIENT_ID || !CLIENT_SECRET || !refreshToken) {
+    throw new Error('Missing refresh credentials');
+  }
+  
+  const newTokens = await refreshSaxoToken(CLIENT_ID, CLIENT_SECRET, refreshToken);
+  console.log('Got new tokens, saving to Netlify...');
+  
+  // Gem nye tokens i Netlify environment variables
+  await updateNetlifyEnvVar('SAXO_ACCESS_TOKEN', newTokens.access_token);
+  await updateNetlifyEnvVar('SAXO_REFRESH_TOKEN', newTokens.refresh_token);
+  
+  console.log('Tokens updated successfully');
+  return newTokens.access_token;
+}
+
+async function testToken(token) {
+  return new Promise((resolve) => {
+    const options = {
+      hostname: 'gateway.saxobank.com',
+      port: 443,
+      path: '/openapi/port/v1/accounts/me',
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${token}`
+      }
+    };
+
+    const req = https.request(options, (res) => {
+      resolve(res.statusCode === 200);
+    });
+
+    req.on('error', () => resolve(false));
+    req.end();
+  });
+}
+
+function refreshSaxoToken(clientId, clientSecret, refreshToken) {
   return new Promise((resolve, reject) => {
     const postData = new URLSearchParams({
       grant_type: 'refresh_token',
-      refresh_token: refreshTokenValue,
-      client_id: CLIENT_ID,
-      client_secret: CLIENT_SECRET
+      refresh_token: refreshToken,
+      client_id: clientId,
+      client_secret: clientSecret
     }).toString();
 
     const options = {
@@ -168,6 +163,51 @@ function refreshTokenRequest(refreshTokenValue) {
           resolve(JSON.parse(data));
         } else {
           reject(new Error(`Refresh failed: ${res.statusCode} - ${data}`));
+        }
+      });
+    });
+
+    req.on('error', reject);
+    req.write(postData);
+    req.end();
+  });
+}
+
+function updateNetlifyEnvVar(key, value) {
+  return new Promise((resolve, reject) => {
+    const NETLIFY_API_TOKEN = process.env.NETLIFY_API_TOKEN;
+    const NETLIFY_SITE_ID = process.env.NETLIFY_SITE_ID;
+    
+    if (!NETLIFY_API_TOKEN || !NETLIFY_SITE_ID) {
+      reject(new Error('Missing Netlify credentials'));
+      return;
+    }
+
+    const postData = JSON.stringify({
+      key: key,
+      values: [{ value: value, context: 'all' }]
+    });
+
+    const options = {
+      hostname: 'api.netlify.com',
+      port: 443,
+      path: `/api/v1/accounts/staalholding's team/env/${key}?site_id=${NETLIFY_SITE_ID}`,
+      method: 'PATCH',
+      headers: {
+        'Authorization': `Bearer ${NETLIFY_API_TOKEN}`,
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(postData)
+      }
+    };
+
+    const req = https.request(options, (res) => {
+      let data = '';
+      res.on('data', (chunk) => data += chunk);
+      res.on('end', () => {
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          resolve(JSON.parse(data || '{}'));
+        } else {
+          reject(new Error(`Netlify update failed: ${res.statusCode} - ${data}`));
         }
       });
     });
