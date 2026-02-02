@@ -15,22 +15,14 @@ exports.handler = async (event) => {
     return { statusCode: 400, body: JSON.stringify({ error: 'Invalid JSON', raw: event.body }) };
   }
 
-  // Hent ALTID nyt token via refresh
-  let ACCESS_TOKEN;
-  try {
-    ACCESS_TOKEN = await getFreshToken();
-  } catch (tokenError) {
-    console.error('Token error:', tokenError.message);
-    return { statusCode: 500, body: JSON.stringify({ error: 'Token refresh failed', details: tokenError.message }) };
-  }
-
+  const ACCESS_TOKEN = process.env.SAXO_ACCESS_TOKEN;
   const ACCOUNT_KEY = process.env.SAXO_ACCOUNT_KEY;
   
   if (!ACCESS_TOKEN || !ACCOUNT_KEY) {
     return { statusCode: 500, body: JSON.stringify({ error: 'Missing environment variables' }) };
   }
 
-  const { action, symbol, qty, sl, tp } = data;
+  const { action, symbol, qty } = data;
 
   if (!action || !symbol) {
     return { statusCode: 400, body: JSON.stringify({ error: 'Missing action or symbol', received: data }) };
@@ -82,100 +74,6 @@ exports.handler = async (event) => {
     };
   }
 };
-
-async function getFreshToken() {
-  const CLIENT_ID = process.env.SAXO_CLIENT_ID;
-  const CLIENT_SECRET = process.env.SAXO_CLIENT_SECRET;
-  
-  if (!CLIENT_ID || !CLIENT_SECRET) {
-    throw new Error('Missing client credentials');
-  }
-  
-  // Hent refresh token fra Blob storage eller environment
-  let currentRefreshToken = await getStoredRefreshToken();
-  if (!currentRefreshToken) {
-    currentRefreshToken = process.env.SAXO_REFRESH_TOKEN;
-  }
-  
-  if (!currentRefreshToken) {
-    throw new Error('No refresh token available');
-  }
-  
-  console.log('Refreshing token...');
-  const tokenData = await refreshToken(CLIENT_ID, CLIENT_SECRET, currentRefreshToken);
-  console.log('Token refreshed, expires in:', tokenData.expires_in, 'seconds');
-  
-  // Gem det nye refresh token til næste gang
-  if (tokenData.refresh_token) {
-    await storeRefreshToken(tokenData.refresh_token);
-    console.log('New refresh token stored');
-  }
-  
-  return tokenData.access_token;
-}
-
-async function getStoredRefreshToken() {
-  try {
-    const { getStore } = await import('@netlify/blobs');
-    const store = getStore('saxo-tokens');
-    const token = await store.get('refresh_token');
-    if (token) {
-      console.log('Using stored refresh token');
-      return token;
-    }
-  } catch (e) {
-    console.log('Could not read from blob storage:', e.message);
-  }
-  return null;
-}
-
-async function storeRefreshToken(token) {
-  try {
-    const { getStore } = await import('@netlify/blobs');
-    const store = getStore('saxo-tokens');
-    await store.set('refresh_token', token);
-  } catch (e) {
-    console.log('Could not write to blob storage:', e.message);
-  }
-}
-
-function refreshToken(clientId, clientSecret, refreshToken) {
-  return new Promise((resolve, reject) => {
-    const postData = new URLSearchParams({
-      grant_type: 'refresh_token',
-      refresh_token: refreshToken,
-      client_id: clientId,
-      client_secret: clientSecret
-    }).toString();
-
-    const options = {
-      hostname: 'live.logonvalidation.net',
-      port: 443,
-      path: '/token',
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'Content-Length': Buffer.byteLength(postData)
-      }
-    };
-
-    const req = https.request(options, (res) => {
-      let data = '';
-      res.on('data', (chunk) => data += chunk);
-      res.on('end', () => {
-        if (res.statusCode >= 200 && res.statusCode < 300) {
-          resolve(JSON.parse(data));
-        } else {
-          reject(new Error(`Token refresh failed: ${res.statusCode} - ${data}`));
-        }
-      });
-    });
-
-    req.on('error', reject);
-    req.write(postData);
-    req.end();
-  });
-}
 
 function placeOrder(order, token) {
   return new Promise((resolve, reject) => {
@@ -333,3 +231,4 @@ function deleteOrder(orderId, accountKey, token) {
     req.end();
   });
 }
+
