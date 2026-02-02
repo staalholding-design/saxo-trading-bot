@@ -1,14 +1,12 @@
 exports.handler = async (event, context) => {
-  const { blobs } = context;
-  
-  if (!blobs) {
+  if (!context.blobs) {
     return {
       statusCode: 500,
       body: JSON.stringify({ error: 'Blobs not available' })
     };
   }
   
-  const store = blobs.getStore('saxo-tokens');
+  const store = context.blobs.getStore('saxo-tokens');
   
   const accessToken = process.env.SAXO_ACCESS_TOKEN;
   const refreshToken = process.env.SAXO_REFRESH_TOKEN;
