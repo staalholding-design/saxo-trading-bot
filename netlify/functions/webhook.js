@@ -3,7 +3,7 @@ const https = require('https');
 let memoryToken = null;
 let memoryExpiry = 0;
 
-exports.handler = async (event) => {
+exports.handler = async (event, context) => {
   console.log('Incoming request:', event.httpMethod, event.body);
   
   if (event.httpMethod !== 'POST') {
@@ -20,7 +20,7 @@ exports.handler = async (event) => {
 
   let ACCESS_TOKEN;
   try {
-    ACCESS_TOKEN = await getValidToken();
+    ACCESS_TOKEN = await getValidToken(context);
   } catch (tokenError) {
     console.error('Token error:', tokenError.message);
     return { statusCode: 500, body: JSON.stringify({ error: 'Token error', details: tokenError.message }) };
@@ -79,7 +79,6 @@ exports.handler = async (event) => {
   } catch (error) {
     console.error('Main error:', error.message);
     
-    // Hvis 401, nulstil token så næste request prøver igen
     if (error.message.includes('401')) {
       memoryToken = null;
       memoryExpiry = 0;
@@ -92,56 +91,53 @@ exports.handler = async (event) => {
   }
 };
 
-async function getValidToken() {
+async function getValidToken(context) {
   const now = Date.now();
   
-  // Prøv memory token først
   if (memoryToken && memoryExpiry > now) {
     console.log('Using memory token');
     return memoryToken;
   }
   
-  // Prøv at læse fra blob storage
-  try {
-    const { getStore } = await import('@netlify/blobs');
-    const store = getStore('saxo-tokens');
-    const storedData = await store.get('token-data', { type: 'json' });
-    
-    if (storedData && storedData.accessToken && storedData.expiry > now) {
-      console.log('Using stored token from blob');
-      memoryToken = storedData.accessToken;
-      memoryExpiry = storedData.expiry;
-      return memoryToken;
+  if (context && context.blobs) {
+    try {
+      const store = context.blobs.getStore('saxo-tokens');
+      const storedData = await store.get('token-data', { type: 'json' });
+      
+      if (storedData && storedData.accessToken && storedData.expiry > now) {
+        console.log('Using stored token');
+        memoryToken = storedData.accessToken;
+        memoryExpiry = storedData.expiry;
+        return memoryToken;
+      }
+      
+      if (storedData && storedData.refreshToken) {
+        console.log('Refreshing token...');
+        const newTokens = await refreshTokenRequest(storedData.refreshToken);
+        
+        const newData = {
+          accessToken: newTokens.access_token,
+          refreshToken: newTokens.refresh_token,
+          expiry: now + (newTokens.expires_in * 1000) - 60000
+        };
+        
+        await store.setJSON('token-data', newData);
+        console.log('New tokens stored');
+        
+        memoryToken = newData.accessToken;
+        memoryExpiry = newData.expiry;
+        return memoryToken;
+      }
+    } catch (e) {
+      console.log('Blob error:', e.message);
     }
-    
-    // Token udløbet eller mangler - refresh det
-    if (storedData && storedData.refreshToken) {
-      console.log('Refreshing token...');
-      const newTokens = await refreshToken(storedData.refreshToken);
-      
-      const newData = {
-        accessToken: newTokens.access_token,
-        refreshToken: newTokens.refresh_token,
-        expiry: now + (newTokens.expires_in * 1000) - 60000 // 1 min buffer
-      };
-      
-      await store.setJSON('token-data', newData);
-      console.log('New tokens stored');
-      
-      memoryToken = newData.accessToken;
-      memoryExpiry = newData.expiry;
-      return memoryToken;
-    }
-  } catch (e) {
-    console.log('Blob error:', e.message);
   }
   
-  // Fallback til environment variable
   console.log('Using environment token');
   return process.env.SAXO_ACCESS_TOKEN;
 }
 
-async function refreshToken(refreshTokenValue) {
+function refreshTokenRequest(refreshTokenValue) {
   const CLIENT_ID = process.env.SAXO_CLIENT_ID;
   const CLIENT_SECRET = process.env.SAXO_CLIENT_SECRET;
   
