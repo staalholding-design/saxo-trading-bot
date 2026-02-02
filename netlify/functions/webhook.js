@@ -58,7 +58,17 @@ exports.handler = async (event) => {
       const buySell = action.toLowerCase() === 'buy' ? 'Buy' : 'Sell';
       const oppositeSide = buySell === 'Buy' ? 'Sell' : 'Buy';
 
-      // Trin 1: Placer market order
+      // Trin 1: LUK eksisterende position + annuller ordrer FØR ny entry
+      console.log('Closing existing position and orders before new entry...');
+      const closeResult = await closePosition(uic, ACCESS_TOKEN, ACCOUNT_KEY);
+      console.log('Close result:', closeResult);
+      const cancelResult = await cancelOrders(uic, ACCESS_TOKEN, ACCOUNT_KEY);
+      console.log('Cancel orders result:', cancelResult);
+
+      // Kort pause så Saxo når at processere
+      await new Promise(r => setTimeout(r, 50));
+
+      // Trin 2: Placer market order
       const order = {
         AccountKey: ACCOUNT_KEY,
         Amount: amount,
@@ -73,7 +83,7 @@ exports.handler = async (event) => {
       const entryResult = await placeOrder(order, ACCESS_TOKEN);
       console.log('Entry result:', entryResult);
 
-      result = { entry: entryResult };
+      result = { closed: closeResult, cancelledOrders: cancelResult, entry: entryResult };
 
       // Trin 2: Hent fill-pris og placer trailing stop
       if (trailingStop && trailingStop.enabled) {
