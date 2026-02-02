@@ -1,5 +1,8 @@
 const https = require('https');
 
+let memoryToken = null;
+let memoryExpiry = 0;
+
 exports.handler = async (event) => {
   console.log('Incoming request:', event.httpMethod, event.body);
   
@@ -15,11 +18,18 @@ exports.handler = async (event) => {
     return { statusCode: 400, body: JSON.stringify({ error: 'Invalid JSON', raw: event.body }) };
   }
 
-  const ACCESS_TOKEN = process.env.SAXO_ACCESS_TOKEN;
+  let ACCESS_TOKEN;
+  try {
+    ACCESS_TOKEN = await getValidToken();
+  } catch (tokenError) {
+    console.error('Token error:', tokenError.message);
+    return { statusCode: 500, body: JSON.stringify({ error: 'Token error', details: tokenError.message }) };
+  }
+
   const ACCOUNT_KEY = process.env.SAXO_ACCOUNT_KEY;
   
   if (!ACCESS_TOKEN || !ACCOUNT_KEY) {
-    return { statusCode: 500, body: JSON.stringify({ error: 'Missing environment variables' }) };
+    return { statusCode: 500, body: JSON.stringify({ error: 'Missing credentials' }) };
   }
 
   const { action, symbol, qty } = data;
@@ -68,12 +78,109 @@ exports.handler = async (event) => {
     };
   } catch (error) {
     console.error('Main error:', error.message);
+    
+    // Hvis 401, nulstil token så næste request prøver igen
+    if (error.message.includes('401')) {
+      memoryToken = null;
+      memoryExpiry = 0;
+    }
+    
     return {
       statusCode: 500,
       body: JSON.stringify({ success: false, error: error.message })
     };
   }
 };
+
+async function getValidToken() {
+  const now = Date.now();
+  
+  // Prøv memory token først
+  if (memoryToken && memoryExpiry > now) {
+    console.log('Using memory token');
+    return memoryToken;
+  }
+  
+  // Prøv at læse fra blob storage
+  try {
+    const { getStore } = await import('@netlify/blobs');
+    const store = getStore('saxo-tokens');
+    const storedData = await store.get('token-data', { type: 'json' });
+    
+    if (storedData && storedData.accessToken && storedData.expiry > now) {
+      console.log('Using stored token from blob');
+      memoryToken = storedData.accessToken;
+      memoryExpiry = storedData.expiry;
+      return memoryToken;
+    }
+    
+    // Token udløbet eller mangler - refresh det
+    if (storedData && storedData.refreshToken) {
+      console.log('Refreshing token...');
+      const newTokens = await refreshToken(storedData.refreshToken);
+      
+      const newData = {
+        accessToken: newTokens.access_token,
+        refreshToken: newTokens.refresh_token,
+        expiry: now + (newTokens.expires_in * 1000) - 60000 // 1 min buffer
+      };
+      
+      await store.setJSON('token-data', newData);
+      console.log('New tokens stored');
+      
+      memoryToken = newData.accessToken;
+      memoryExpiry = newData.expiry;
+      return memoryToken;
+    }
+  } catch (e) {
+    console.log('Blob error:', e.message);
+  }
+  
+  // Fallback til environment variable
+  console.log('Using environment token');
+  return process.env.SAXO_ACCESS_TOKEN;
+}
+
+async function refreshToken(refreshTokenValue) {
+  const CLIENT_ID = process.env.SAXO_CLIENT_ID;
+  const CLIENT_SECRET = process.env.SAXO_CLIENT_SECRET;
+  
+  return new Promise((resolve, reject) => {
+    const postData = new URLSearchParams({
+      grant_type: 'refresh_token',
+      refresh_token: refreshTokenValue,
+      client_id: CLIENT_ID,
+      client_secret: CLIENT_SECRET
+    }).toString();
+
+    const options = {
+      hostname: 'live.logonvalidation.net',
+      port: 443,
+      path: '/token',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Content-Length': Buffer.byteLength(postData)
+      }
+    };
+
+    const req = https.request(options, (res) => {
+      let data = '';
+      res.on('data', (chunk) => data += chunk);
+      res.on('end', () => {
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          resolve(JSON.parse(data));
+        } else {
+          reject(new Error(`Refresh failed: ${res.statusCode} - ${data}`));
+        }
+      });
+    });
+
+    req.on('error', reject);
+    req.write(postData);
+    req.end();
+  });
+}
 
 function placeOrder(order, token) {
   return new Promise((resolve, reject) => {
@@ -231,4 +338,3 @@ function deleteOrder(orderId, accountKey, token) {
     req.end();
   });
 }
-
