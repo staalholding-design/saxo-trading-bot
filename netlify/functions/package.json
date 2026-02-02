@@ -1,5 +1,5 @@
 {
   "dependencies": {
-    "node-fetch": "^3.3.2"
+    "@netlify/blobs": "^8.1.0"
   }
 }
