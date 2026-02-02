@@ -77,7 +77,8 @@ exports.handler = async (event) => {
           OrderType: 'StopIfTraded',
           OrderPrice: parseFloat(stopLossPrice),
           Uic: uic,
-          OrderDuration: { DurationType: 'GoodTillCancel' }
+          OrderDuration: { DurationType: 'GoodTillCancel' },
+          ManualOrder: true
         });
       }
 
@@ -90,13 +91,14 @@ exports.handler = async (event) => {
           OrderType: 'Limit',
           OrderPrice: parseFloat(takeProfitPrice),
           Uic: uic,
-          OrderDuration: { DurationType: 'GoodTillCancel' }
+          OrderDuration: { DurationType: 'GoodTillCancel' },
+          ManualOrder: true
         });
       }
 
       // Trailing Stop
       if (trailingStop && trailingStop.enabled) {
-        const trailingOrder = {
+        relatedOrders.push({
           Amount: order.Amount,
           AssetType: 'CfdOnIndex',
           BuySell: order.BuySell === 'Buy' ? 'Sell' : 'Buy',
@@ -104,9 +106,9 @@ exports.handler = async (event) => {
           TrailingStopDistanceToMarket: parseFloat(trailingStop.trailPoints) || 25,
           TrailingStopStep: parseFloat(trailingStop.trailOffset) || 1,
           Uic: uic,
-          OrderDuration: { DurationType: 'GoodTillCancel' }
-        };
-        relatedOrders.push(trailingOrder);
+          OrderDuration: { DurationType: 'GoodTillCancel' },
+          ManualOrder: true
+        });
       }
 
       // Tilføj relaterede ordrer til hovedordren
