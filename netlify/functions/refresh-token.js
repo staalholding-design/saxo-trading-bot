@@ -21,8 +21,8 @@ exports.handler = async (event) => {
     console.log('Got new tokens from Saxo');
 
     // 2. Gem i Netlify env vars
-    await updateNetlifyEnvVar('SAXO_ACCESS_TOKEN', tokenData.access_token, NETLIFY_API_TOKEN, NETLIFY_SITE_ID);
-    await updateNetlifyEnvVar('SAXO_REFRESH_TOKEN', tokenData.refresh_token, NETLIFY_API_TOKEN, NETLIFY_SITE_ID);
+    await setNetlifyEnvVar('SAXO_ACCESS_TOKEN', tokenData.access_token, NETLIFY_API_TOKEN, NETLIFY_SITE_ID);
+    await setNetlifyEnvVar('SAXO_REFRESH_TOKEN', tokenData.refresh_token, NETLIFY_API_TOKEN, NETLIFY_SITE_ID);
     console.log('Saved tokens to Netlify');
 
     // 3. Trigger redeploy så webhook får de nye tokens
@@ -81,18 +81,26 @@ function refreshToken(clientId, clientSecret, refreshToken) {
   });
 }
 
-function updateNetlifyEnvVar(key, value, apiToken, siteId) {
+async function setNetlifyEnvVar(key, value, apiToken, siteId) {
+  // Først prøv DELETE for at fjerne eksisterende
+  try {
+    await deleteNetlifyEnvVar(key, apiToken, siteId);
+  } catch (e) {
+    // Ignorer fejl - variablen findes måske ikke
+  }
+
+  // Så opret ny med POST
   return new Promise((resolve, reject) => {
-    const postData = JSON.stringify({
+    const postData = JSON.stringify([{
       key: key,
       values: [{ value: value, context: 'all' }]
-    });
+    }]);
 
     const options = {
       hostname: 'api.netlify.com',
       port: 443,
-      path: `/api/v1/sites/${siteId}/env/${key}`,
-      method: 'PATCH',
+      path: `/api/v1/sites/${siteId}/env`,
+      method: 'POST',
       headers: {
         'Authorization': `Bearer ${apiToken}`,
         'Content-Type': 'application/json',
@@ -105,15 +113,44 @@ function updateNetlifyEnvVar(key, value, apiToken, siteId) {
       res.on('data', (chunk) => data += chunk);
       res.on('end', () => {
         if (res.statusCode >= 200 && res.statusCode < 300) {
-          resolve(JSON.parse(data || '{}'));
+          resolve(JSON.parse(data || '[]'));
         } else {
-          reject(new Error(`Netlify update failed for ${key}: ${res.statusCode} - ${data}`));
+          reject(new Error(`Netlify create failed for ${key}: ${res.statusCode} - ${data}`));
         }
       });
     });
 
     req.on('error', reject);
     req.write(postData);
+    req.end();
+  });
+}
+
+function deleteNetlifyEnvVar(key, apiToken, siteId) {
+  return new Promise((resolve, reject) => {
+    const options = {
+      hostname: 'api.netlify.com',
+      port: 443,
+      path: `/api/v1/sites/${siteId}/env/${key}`,
+      method: 'DELETE',
+      headers: {
+        'Authorization': `Bearer ${apiToken}`
+      }
+    };
+
+    const req = https.request(options, (res) => {
+      let data = '';
+      res.on('data', (chunk) => data += chunk);
+      res.on('end', () => {
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          resolve();
+        } else {
+          reject(new Error(`Delete failed: ${res.statusCode}`));
+        }
+      });
+    });
+
+    req.on('error', reject);
     req.end();
   });
 }
