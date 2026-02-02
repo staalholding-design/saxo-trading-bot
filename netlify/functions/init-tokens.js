@@ -1,6 +1,14 @@
-exports.handler = async (event) => {
-  const { getStore } = await import('@netlify/blobs');
-  const store = getStore('saxo-tokens');
+exports.handler = async (event, context) => {
+  const { blobs } = context;
+  
+  if (!blobs) {
+    return {
+      statusCode: 500,
+      body: JSON.stringify({ error: 'Blobs not available' })
+    };
+  }
+  
+  const store = blobs.getStore('saxo-tokens');
   
   const accessToken = process.env.SAXO_ACCESS_TOKEN;
   const refreshToken = process.env.SAXO_REFRESH_TOKEN;
@@ -8,7 +16,7 @@ exports.handler = async (event) => {
   if (!accessToken || !refreshToken) {
     return {
       statusCode: 400,
-      body: JSON.stringify({ error: 'Missing SAXO_ACCESS_TOKEN or SAXO_REFRESH_TOKEN in environment' })
+      body: JSON.stringify({ error: 'Missing tokens in environment' })
     };
   }
   
@@ -22,6 +30,6 @@ exports.handler = async (event) => {
   
   return {
     statusCode: 200,
-    body: JSON.stringify({ success: true, message: 'Tokens initialized in blob storage' })
+    body: JSON.stringify({ success: true, message: 'Tokens initialized' })
   };
 };
