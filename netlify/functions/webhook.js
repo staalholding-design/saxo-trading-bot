@@ -54,71 +54,100 @@ exports.handler = async (event) => {
       const cancelResult = await cancelOrders(uic, ACCESS_TOKEN, ACCOUNT_KEY);
       result = { positions: closeResult, orders: cancelResult };
     } else {
-      // Hovedordre (market entry)
+      const amount = Math.max(0.1, parseFloat(qty) || 0.1);
+      const buySell = action.toLowerCase() === 'buy' ? 'Buy' : 'Sell';
+      const oppositeSide = buySell === 'Buy' ? 'Sell' : 'Buy';
+
+      // Trin 1: Placer market order
       const order = {
         AccountKey: ACCOUNT_KEY,
-        Amount: Math.max(0.1, parseFloat(qty) || 0.1),
+        Amount: amount,
         AssetType: 'CfdOnIndex',
-        BuySell: action.toLowerCase() === 'buy' ? 'Buy' : 'Sell',
+        BuySell: buySell,
         OrderType: 'Market',
         Uic: uic,
         ManualOrder: true
       };
 
-      // Tilføj relaterede ordrer (SL/TP/Trailing)
-      const relatedOrders = [];
+      console.log('Placing market order:', JSON.stringify(order, null, 2));
+      const entryResult = await placeOrder(order, ACCESS_TOKEN);
+      console.log('Entry result:', entryResult);
 
-      // Stop Loss
+      result = { entry: entryResult };
+
+      // Trin 2: Hent fill-pris og placer trailing stop
+      if (trailingStop && trailingStop.enabled) {
+        // Vent lidt så positionen registreres
+        await new Promise(r => setTimeout(r, 500));
+        
+        // Hent aktuel position for at få fill-pris
+        const position = await getPosition(uic, ACCESS_TOKEN);
+        console.log('Position:', position);
+        
+        if (position && position.PositionBase) {
+          const fillPrice = position.PositionBase.OpenPrice;
+          const trailDistance = parseFloat(trailingStop.trailPoints) || 25;
+          const trailStep = parseFloat(trailingStop.trailOffset) || 1;
+          
+          // Beregn trailing stop pris baseret på fill
+          const trailPrice = buySell === 'Buy' 
+            ? fillPrice - trailDistance 
+            : fillPrice + trailDistance;
+
+          const trailingOrder = {
+            AccountKey: ACCOUNT_KEY,
+            Amount: amount,
+            AssetType: 'CfdOnIndex',
+            BuySell: oppositeSide,
+            OrderType: 'TrailingStop',
+            OrderPrice: trailPrice,
+            TrailingStopDistanceToMarket: trailDistance,
+            TrailingStopStep: trailStep,
+            Uic: uic,
+            OrderDuration: { DurationType: 'GoodTillCancel' },
+            ManualOrder: true
+          };
+
+          console.log('Placing trailing stop:', JSON.stringify(trailingOrder, null, 2));
+          const trailResult = await placeOrder(trailingOrder, ACCESS_TOKEN);
+          console.log('Trailing stop result:', trailResult);
+          result.trailingStop = trailResult;
+        }
+      }
+
+      // Stop Loss (separat ordre)
       if (stopLossPrice) {
-        relatedOrders.push({
-          Amount: order.Amount,
+        const slOrder = {
+          AccountKey: ACCOUNT_KEY,
+          Amount: amount,
           AssetType: 'CfdOnIndex',
-          BuySell: order.BuySell === 'Buy' ? 'Sell' : 'Buy',
-          OrderType: 'StopIfTraded',
+          BuySell: oppositeSide,
+          OrderType: 'Stop',
           OrderPrice: parseFloat(stopLossPrice),
           Uic: uic,
           OrderDuration: { DurationType: 'GoodTillCancel' },
           ManualOrder: true
-        });
+        };
+        console.log('Placing stop loss:', JSON.stringify(slOrder, null, 2));
+        result.stopLoss = await placeOrder(slOrder, ACCESS_TOKEN);
       }
 
-      // Take Profit
+      // Take Profit (separat ordre)
       if (takeProfitPrice) {
-        relatedOrders.push({
-          Amount: order.Amount,
+        const tpOrder = {
+          AccountKey: ACCOUNT_KEY,
+          Amount: amount,
           AssetType: 'CfdOnIndex',
-          BuySell: order.BuySell === 'Buy' ? 'Sell' : 'Buy',
+          BuySell: oppositeSide,
           OrderType: 'Limit',
           OrderPrice: parseFloat(takeProfitPrice),
           Uic: uic,
           OrderDuration: { DurationType: 'GoodTillCancel' },
           ManualOrder: true
-        });
+        };
+        console.log('Placing take profit:', JSON.stringify(tpOrder, null, 2));
+        result.takeProfit = await placeOrder(tpOrder, ACCESS_TOKEN);
       }
-
-      // Trailing Stop - relativ til markedspris
-      if (trailingStop && trailingStop.enabled) {
-        relatedOrders.push({
-          Amount: order.Amount,
-          AssetType: 'CfdOnIndex',
-          BuySell: order.BuySell === 'Buy' ? 'Sell' : 'Buy',
-          OrderType: 'TrailingStop',
-          TrailingStopDistanceToMarket: parseFloat(trailingStop.trailPoints) || 25,
-          TrailingStopStep: parseFloat(trailingStop.trailOffset) || 1,
-          Uic: uic,
-          OrderDuration: { DurationType: 'GoodTillCancel' },
-          ManualOrder: true
-        });
-      }
-
-      // Tilføj relaterede ordrer til hovedordren
-      if (relatedOrders.length > 0) {
-        order.Orders = relatedOrders;
-      }
-
-      console.log('Placing order:', JSON.stringify(order, null, 2));
-      result = await placeOrder(order, ACCESS_TOKEN);
-      console.log('Order result:', result);
     }
     
     return {
@@ -208,6 +237,37 @@ function closePosition(uic, token, accountKey) {
           } else {
             resolve({ message: 'No position to close' });
           }
+        } else {
+          reject(new Error(`Saxo ${res.statusCode}: ${data}`));
+        }
+      });
+    });
+
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+function getPosition(uic, token) {
+  return new Promise((resolve, reject) => {
+    const options = {
+      hostname: 'gateway.saxobank.com',
+      port: 443,
+      path: `/openapi/port/v1/positions/me?FieldGroups=PositionBase`,
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${token}`
+      }
+    };
+
+    const req = https.request(options, (res) => {
+      let data = '';
+      res.on('data', (chunk) => data += chunk);
+      res.on('end', () => {
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          const positions = JSON.parse(data || '{}');
+          const pos = positions.Data?.find(p => p.PositionBase?.Uic === uic);
+          resolve(pos || null);
         } else {
           reject(new Error(`Saxo ${res.statusCode}: ${data}`));
         }
