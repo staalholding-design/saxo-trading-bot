@@ -29,7 +29,7 @@ exports.handler = async (event) => {
     return { statusCode: 500, body: JSON.stringify({ error: 'Missing credentials' }) };
   }
 
-  const { action, symbol, qty } = data;
+  const { action, symbol, qty, stopLossPrice, takeProfitPrice, trailingStop } = data;
 
   if (!action || !symbol) {
     return { statusCode: 400, body: JSON.stringify({ error: 'Missing action or symbol', received: data }) };
@@ -54,6 +54,7 @@ exports.handler = async (event) => {
       const cancelResult = await cancelOrders(uic, ACCESS_TOKEN, ACCOUNT_KEY);
       result = { positions: closeResult, orders: cancelResult };
     } else {
+      // Hovedordre (market entry)
       const order = {
         AccountKey: ACCOUNT_KEY,
         Amount: Math.max(0.1, parseFloat(qty) || 0.1),
@@ -64,7 +65,56 @@ exports.handler = async (event) => {
         ManualOrder: true
       };
 
-      console.log('Placing order:', order);
+      // Tilføj relaterede ordrer (SL/TP/Trailing)
+      const relatedOrders = [];
+
+      // Stop Loss
+      if (stopLossPrice) {
+        relatedOrders.push({
+          Amount: order.Amount,
+          AssetType: 'CfdOnIndex',
+          BuySell: order.BuySell === 'Buy' ? 'Sell' : 'Buy',
+          OrderType: 'StopIfTraded',
+          OrderPrice: parseFloat(stopLossPrice),
+          Uic: uic,
+          OrderDuration: { DurationType: 'GoodTillCancel' }
+        });
+      }
+
+      // Take Profit
+      if (takeProfitPrice) {
+        relatedOrders.push({
+          Amount: order.Amount,
+          AssetType: 'CfdOnIndex',
+          BuySell: order.BuySell === 'Buy' ? 'Sell' : 'Buy',
+          OrderType: 'Limit',
+          OrderPrice: parseFloat(takeProfitPrice),
+          Uic: uic,
+          OrderDuration: { DurationType: 'GoodTillCancel' }
+        });
+      }
+
+      // Trailing Stop
+      if (trailingStop && trailingStop.enabled) {
+        const trailingOrder = {
+          Amount: order.Amount,
+          AssetType: 'CfdOnIndex',
+          BuySell: order.BuySell === 'Buy' ? 'Sell' : 'Buy',
+          OrderType: 'TrailingStopIfTraded',
+          TrailingStopDistanceToMarket: parseFloat(trailingStop.trailPoints) || 25,
+          TrailingStopStep: parseFloat(trailingStop.trailOffset) || 1,
+          Uic: uic,
+          OrderDuration: { DurationType: 'GoodTillCancel' }
+        };
+        relatedOrders.push(trailingOrder);
+      }
+
+      // Tilføj relaterede ordrer til hovedordren
+      if (relatedOrders.length > 0) {
+        order.Orders = relatedOrders;
+      }
+
+      console.log('Placing order:', JSON.stringify(order, null, 2));
       result = await placeOrder(order, ACCESS_TOKEN);
       console.log('Order result:', result);
     }
@@ -83,139 +133,7 @@ exports.handler = async (event) => {
 };
 
 async function getValidToken() {
-  const currentToken = process.env.SAXO_ACCESS_TOKEN;
-  const refreshToken = process.env.SAXO_REFRESH_TOKEN;
-  
-  // Prøv nuværende token først
-  const isValid = await testToken(currentToken);
-  if (isValid) {
-    console.log('Current token is valid');
-    return currentToken;
-  }
-  
-  // Token udløbet - refresh det
-  console.log('Token expired, refreshing...');
-  
-  const CLIENT_ID = process.env.SAXO_CLIENT_ID;
-  const CLIENT_SECRET = process.env.SAXO_CLIENT_SECRET;
-  
-  if (!CLIENT_ID || !CLIENT_SECRET || !refreshToken) {
-    throw new Error('Missing refresh credentials');
-  }
-  
-  const newTokens = await refreshSaxoToken(CLIENT_ID, CLIENT_SECRET, refreshToken);
-  console.log('Got new tokens, saving to Netlify...');
-  
-  // Gem nye tokens i Netlify environment variables
-  await updateNetlifyEnvVar('SAXO_ACCESS_TOKEN', newTokens.access_token);
-  await updateNetlifyEnvVar('SAXO_REFRESH_TOKEN', newTokens.refresh_token);
-  
-  console.log('Tokens updated successfully');
-  return newTokens.access_token;
-}
-
-async function testToken(token) {
-  return new Promise((resolve) => {
-    const options = {
-      hostname: 'gateway.saxobank.com',
-      port: 443,
-      path: '/openapi/port/v1/accounts/me',
-      method: 'GET',
-      headers: {
-        'Authorization': `Bearer ${token}`
-      }
-    };
-
-    const req = https.request(options, (res) => {
-      resolve(res.statusCode === 200);
-    });
-
-    req.on('error', () => resolve(false));
-    req.end();
-  });
-}
-
-function refreshSaxoToken(clientId, clientSecret, refreshToken) {
-  return new Promise((resolve, reject) => {
-    const postData = new URLSearchParams({
-      grant_type: 'refresh_token',
-      refresh_token: refreshToken,
-      client_id: clientId,
-      client_secret: clientSecret
-    }).toString();
-
-    const options = {
-      hostname: 'live.logonvalidation.net',
-      port: 443,
-      path: '/token',
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'Content-Length': Buffer.byteLength(postData)
-      }
-    };
-
-    const req = https.request(options, (res) => {
-      let data = '';
-      res.on('data', (chunk) => data += chunk);
-      res.on('end', () => {
-        if (res.statusCode >= 200 && res.statusCode < 300) {
-          resolve(JSON.parse(data));
-        } else {
-          reject(new Error(`Refresh failed: ${res.statusCode} - ${data}`));
-        }
-      });
-    });
-
-    req.on('error', reject);
-    req.write(postData);
-    req.end();
-  });
-}
-
-function updateNetlifyEnvVar(key, value) {
-  return new Promise((resolve, reject) => {
-    const NETLIFY_API_TOKEN = process.env.NETLIFY_API_TOKEN;
-    const NETLIFY_SITE_ID = process.env.NETLIFY_SITE_ID;
-    
-    if (!NETLIFY_API_TOKEN || !NETLIFY_SITE_ID) {
-      reject(new Error('Missing Netlify credentials'));
-      return;
-    }
-
-    const postData = JSON.stringify({
-      key: key,
-      values: [{ value: value, context: 'all' }]
-    });
-
-    const options = {
-      hostname: 'api.netlify.com',
-      port: 443,
-      path: `/api/v1/sites/${NETLIFY_SITE_ID}/env/${key}`,
-      method: 'PATCH',
-      headers: {
-        'Authorization': `Bearer ${NETLIFY_API_TOKEN}`,
-        'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(postData)
-      }
-    };
-
-    const req = https.request(options, (res) => {
-      let data = '';
-      res.on('data', (chunk) => data += chunk);
-      res.on('end', () => {
-        if (res.statusCode >= 200 && res.statusCode < 300) {
-          resolve(JSON.parse(data || '{}'));
-        } else {
-          reject(new Error(`Netlify update failed: ${res.statusCode} - ${data}`));
-        }
-      });
-    });
-
-    req.on('error', reject);
-    req.write(postData);
-    req.end();
-  });
+  return process.env.SAXO_ACCESS_TOKEN;
 }
 
 function placeOrder(order, token) {
