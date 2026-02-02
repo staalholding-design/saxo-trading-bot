@@ -2,7 +2,10 @@ const https = require('https');
 
 const ACCOUNT_SLUG = 'staalholding';
 
-exports.handler = async (event) => {
+// Scheduled function handler
+exports.handler = async (event, context) => {
+  console.log('Refresh token triggered:', event.headers?.['x-nf-event'] || 'manual');
+  
   const CLIENT_ID = process.env.SAXO_CLIENT_ID;
   const CLIENT_SECRET = process.env.SAXO_CLIENT_SECRET;
   const REFRESH_TOKEN = process.env.SAXO_REFRESH_TOKEN;
@@ -10,24 +13,24 @@ exports.handler = async (event) => {
   const NETLIFY_SITE_ID = process.env.NETLIFY_SITE_ID;
 
   if (!CLIENT_ID || !CLIENT_SECRET || !REFRESH_TOKEN) {
+    console.error('Missing Saxo credentials');
     return { statusCode: 500, body: JSON.stringify({ error: 'Missing Saxo credentials' }) };
   }
 
   if (!NETLIFY_API_TOKEN || !NETLIFY_SITE_ID) {
+    console.error('Missing Netlify credentials');
     return { statusCode: 500, body: JSON.stringify({ error: 'Missing Netlify credentials' }) };
   }
 
   try {
-    // 1. Hent nye tokens fra Saxo
+    console.log('Refreshing Saxo token...');
     const tokenData = await refreshToken(CLIENT_ID, CLIENT_SECRET, REFRESH_TOKEN);
     console.log('Got new tokens from Saxo');
 
-    // 2. Gem i Netlify env vars
     await setEnvVar('SAXO_ACCESS_TOKEN', tokenData.access_token, NETLIFY_API_TOKEN, NETLIFY_SITE_ID);
     await setEnvVar('SAXO_REFRESH_TOKEN', tokenData.refresh_token, NETLIFY_API_TOKEN, NETLIFY_SITE_ID);
     console.log('Saved tokens to Netlify');
 
-    // 3. Trigger redeploy
     await netlifyRequest('POST', `/api/v1/sites/${NETLIFY_SITE_ID}/builds`, {}, NETLIFY_API_TOKEN);
     console.log('Triggered redeploy');
 
@@ -121,7 +124,6 @@ function netlifyRequest(method, path, body, apiToken) {
 }
 
 async function setEnvVar(key, value, apiToken, siteId) {
-  // Prøv PATCH først (opdater eksisterende)
   const patchPath = `/api/v1/accounts/${ACCOUNT_SLUG}/env/${key}?site_id=${siteId}`;
   const patchBody = { context: 'all', value: value };
   
@@ -133,14 +135,10 @@ async function setEnvVar(key, value, apiToken, siteId) {
     console.log(`PATCH failed for ${key}, trying DELETE + POST...`);
   }
   
-  // Hvis PATCH fejler, slet og opret ny
   try {
     await netlifyRequest('DELETE', `/api/v1/accounts/${ACCOUNT_SLUG}/env/${key}?site_id=${siteId}`, null, apiToken);
-  } catch (e) {
-    // Ignorer hvis den ikke findes
-  }
+  } catch (e) {}
   
-  // Opret ny
   const postPath = `/api/v1/accounts/${ACCOUNT_SLUG}/env?site_id=${siteId}`;
   const postBody = [{ key: key, values: [{ value: value, context: 'all' }] }];
   await netlifyRequest('POST', postPath, postBody, apiToken);
