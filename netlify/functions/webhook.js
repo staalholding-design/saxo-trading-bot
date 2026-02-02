@@ -87,7 +87,7 @@ exports.handler = async (event) => {
         if (position && position.PositionBase) {
           const fillPrice = position.PositionBase.OpenPrice;
           const trailDistance = parseFloat(trailingStop.trailPoints) || 25;
-          const trailStep = parseFloat(trailingStop.trailOffset) || 1;
+          const trailStep = parseFloat(trailingStop.trailOffset) || 0.05;
           
           // Beregn trailing stop pris baseret på fill
           const trailPrice = buySell === 'Buy' 
@@ -99,12 +99,12 @@ exports.handler = async (event) => {
             Amount: amount,
             AssetType: 'CfdOnIndex',
             BuySell: oppositeSide,
-            OrderType: 'TrailingStop',
+            OrderType: 'StopIfTraded',
             OrderPrice: trailPrice,
             TrailingStopDistanceToMarket: trailDistance,
             TrailingStopStep: trailStep,
             Uic: uic,
-            OrderDuration: { DurationType: 'GoodTillCancel' },
+            OrderDuration: { DurationType: 'DayOrder' },
             ManualOrder: true
           };
 
