@@ -68,7 +68,7 @@ exports.handler = async (event) => {
       // Kort pause så Saxo når at processere
       await new Promise(r => setTimeout(r, 50));
 
-      // Trin 2: Placer market order
+      // Trin 2: Placer market order med retry
       const order = {
         AccountKey: ACCOUNT_KEY,
         Amount: amount,
@@ -80,10 +80,27 @@ exports.handler = async (event) => {
       };
 
       console.log('Placing market order:', JSON.stringify(order, null, 2));
-      const entryResult = await placeOrder(order, ACCESS_TOKEN);
-      console.log('Entry result:', entryResult);
+      
+      let entryResult = null;
+      let attempts = 0;
+      const maxAttempts = 3;
+      
+      while (attempts < maxAttempts && !entryResult) {
+        attempts++;
+        try {
+          entryResult = await placeOrder(order, ACCESS_TOKEN);
+          console.log('Entry result (attempt ' + attempts + '):', entryResult);
+        } catch (err) {
+          console.log('Order attempt ' + attempts + ' failed:', err.message);
+          if (attempts < maxAttempts) {
+            await new Promise(r => setTimeout(r, 200));
+          } else {
+            throw err;
+          }
+        }
+      }
 
-      result = { closed: closeResult, cancelledOrders: cancelResult, entry: entryResult };
+      result = { closed: closeResult, cancelledOrders: cancelResult, entry: entryResult, attempts: attempts };
 
       // Trin 2: Hent fill-pris og placer trailing stop
       if (trailingStop && trailingStop.enabled) {
